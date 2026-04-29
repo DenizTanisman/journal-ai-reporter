@@ -37,13 +37,19 @@ SELECT_BASE = """
 def open_readonly(db_path: str) -> sqlite3.Connection:
     """Open the Cornell SQLite file read-only.
 
-    `immutable=1` lets SQLite skip locking — safe because the Tauri app may
-    write to the file concurrently and we never want to block it.
+    `mode=ro` enforces read-only at the URI level (writes raise
+    OperationalError, verified in tests) but still tracks file changes —
+    crucial because Cornell Diary writes to this same file from the Tauri
+    app while we read. We previously used `immutable=1` which is a
+    performance hint that promises the file won't change; SQLite then
+    skips change detection entirely and the sidecar serves a stale view
+    until restart. Tauri's WAL mode handles concurrent reads safely, so
+    `mode=ro` alone is the right level.
     """
     p = Path(db_path)
     if not p.exists():
         raise FileNotFoundError(f"Cornell DB not found at {db_path}")
-    uri = f"file:{p.as_posix()}?mode=ro&immutable=1"
+    uri = f"file:{p.as_posix()}?mode=ro"
     conn = sqlite3.connect(uri, uri=True, detect_types=sqlite3.PARSE_DECLTYPES)
     conn.row_factory = sqlite3.Row
     return conn
