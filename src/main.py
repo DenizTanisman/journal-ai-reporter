@@ -1,17 +1,24 @@
 """FastAPI entry point.
 
-Phase 0 keeps this minimal: just `/health` so we can verify the skeleton boots.
-Module routes (Jarvis Bridge) plug in starting Phase 4.
+Wires the lifespan, CORS whitelist, request-id logger, exception handler,
+slowapi rate limiter, and the Jarvis Bridge router. `/health` and `/tags`
+deliberately stay fast paths (no DB, no AI) so liveness probes don't compete
+with rate-limited /report calls.
 """
 
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi.errors import RateLimitExceeded
 
 from src import __version__
+from src.api.limiter import limiter
+from src.api.middleware import RequestIdLoggingMiddleware, register_exception_handlers
+from src.api.routes import router as bridge_router
 from src.config import get_settings
 from src.logger import get_logger, setup_logging
 
@@ -33,18 +40,32 @@ def create_app() -> FastAPI:
         debug=settings.app_debug,
         lifespan=lifespan,
     )
+
+    app.state.limiter = limiter
+
+    @app.exception_handler(RateLimitExceeded)
+    async def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+        return JSONResponse(
+            status_code=429,
+            content={"code": "rate_limit", "message": "too many requests"},
+        )
+
+    app.add_middleware(RequestIdLoggingMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.allowed_origins_list,
         allow_credentials=False,
         allow_methods=["GET", "POST"],
-        allow_headers=["Authorization", "Content-Type"],
+        allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
     )
+
+    register_exception_handlers(app)
 
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok", "version": __version__, "env": settings.app_env}
 
+    app.include_router(bridge_router)
     return app
 
 
