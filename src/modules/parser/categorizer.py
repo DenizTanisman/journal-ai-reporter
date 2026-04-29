@@ -62,45 +62,55 @@ RULES: tuple[CategoryRule, ...] = (
         keywords=("ertelendi", "ertelendim", "yarına", "yarına bıraktım", "sonraya", "deferred", "postponed"),
     ),
     # --- todos.open
+    # Turkish stems with case-insensitive flag catch the full inflection ladder:
+    # yapacağ-ım/-sın/-ız, yapmalı-yım/-sın, halletmel-iyim, etc. The regex is
+    # word-boundary aware so "yapacaktı" still hits but "yapamayacağım" (negative
+    # future) is intentionally caught by a more specific failures rule above.
     CategoryRule(
         category="todos",
         subcategory="open",
-        keywords=("yapacağım", "yapmalıyım", "yapılacak", "halletmeliyim", "todo", "to do"),
-        patterns=(re.compile(r"\[\s*\]"),),
+        keywords=("todo", "to do"),
+        patterns=(
+            re.compile(r"\[\s*\]"),
+            re.compile(r"\byapaca\w*\b", re.IGNORECASE),
+            re.compile(r"\byapmalı\w*\b", re.IGNORECASE),
+            re.compile(r"\byapılaca\w*\b", re.IGNORECASE),
+            re.compile(r"\bhalletme\w*\b", re.IGNORECASE),
+        ),
     ),
     # --- concerns.failures (must come before generic concerns to win on "yapamadım")
     CategoryRule(
         category="concerns",
         subcategory="failures",
-        keywords=(
-            "başaramadım",
-            "yapamadım",
-            "hata yaptım",
-            "beceremedim",
-            "failed",
-            "messed up",
+        keywords=("failed", "messed up"),
+        patterns=(
+            re.compile(r"\bbaşaramad\w*\b", re.IGNORECASE),
+            re.compile(r"\byapamad\w*\b", re.IGNORECASE),
+            re.compile(r"\bbeceremed\w*\b", re.IGNORECASE),
+            re.compile(r"\bhata yapt\w*\b", re.IGNORECASE),
         ),
     ),
     # --- concerns.fears
+    # `kork*` covers korkarım / korkarsın / korkma / korkuyor / korkutucu /
+    # korkuyu — the Turkish "fear" stem. `ürk*` covers ürkütücü, ürküyorum.
     CategoryRule(
         category="concerns",
         subcategory="fears",
-        keywords=("korkuyorum", "korkuyor", "korkutucu", "ürküyorum", "afraid", "scared"),
+        keywords=("afraid", "scared"),
+        patterns=(
+            re.compile(r"\bkork\w*\b", re.IGNORECASE),
+            re.compile(r"\bürk\w*\b", re.IGNORECASE),
+        ),
     ),
     # --- concerns.anxieties
     CategoryRule(
         category="concerns",
         subcategory="anxieties",
-        keywords=(
-            "endişe",
-            "endişeliyim",
-            "kaygı",
-            "kaygılıyım",
-            "stres",
-            "stresliyim",
-            "merak ediyorum",
-            "anxious",
-            "worried",
+        keywords=("merak ediyorum", "anxious", "worried"),
+        patterns=(
+            re.compile(r"\bendişe\w*\b", re.IGNORECASE),
+            re.compile(r"\bkaygı\w*\b", re.IGNORECASE),
+            re.compile(r"\bstres\w*\b", re.IGNORECASE),
         ),
     ),
     # --- successes.milestones (must come before achievements: "ilk kez başardım")
@@ -113,13 +123,26 @@ RULES: tuple[CategoryRule, ...] = (
     CategoryRule(
         category="successes",
         subcategory="achievements",
-        keywords=("başardım", "kazandım", "çözdüm", "tamamladığım", "achieved", "won", "solved"),
+        keywords=("achieved", "won", "solved"),
+        patterns=(
+            re.compile(r"\bbaşard\w*\b", re.IGNORECASE),
+            re.compile(r"\bkazand\w*\b", re.IGNORECASE),
+            re.compile(r"\bçözd\w*\b", re.IGNORECASE),
+            re.compile(r"\btamamlad\w*\b", re.IGNORECASE),
+        ),
     ),
     # --- successes.positive_moments
     CategoryRule(
         category="successes",
         subcategory="positive_moments",
-        keywords=("mutluyum", "iyiydi", "harikaydı", "güzeldi", "keyifliydi", "happy", "great"),
+        keywords=("happy", "great"),
+        patterns=(
+            re.compile(r"\bmutlu\w*\b", re.IGNORECASE),
+            re.compile(r"\biyiyd\w*\b", re.IGNORECASE),
+            re.compile(r"\bharika\w*\b", re.IGNORECASE),
+            re.compile(r"\bgüzeld\w*\b", re.IGNORECASE),
+            re.compile(r"\bkeyif\w*\b", re.IGNORECASE),
+        ),
     ),
 )
 
@@ -160,8 +183,14 @@ def classify_sentence(sentence: str) -> list[tuple[CategoryName, SubCategoryName
     seen: set[tuple[str, str]] = set()
     hits: list[tuple[CategoryName, SubCategoryName]] = []
     for rule in RULES:
-        matched = any(_norm(kw) in normalized for kw in rule.keywords) or any(
-            p.search(sentence) for p in rule.patterns
+        # Run patterns against the normalized (Turkish-case-folded) text too,
+        # so that "Korkarım" / "Endişe" / "İlk" etc. match a stem regex even
+        # when Python's Unicode lowering of dotted İ would otherwise insert
+        # a combining dot between letters.
+        matched = (
+            any(_norm(kw) in normalized for kw in rule.keywords)
+            or any(p.search(sentence) for p in rule.patterns)
+            or any(p.search(normalized) for p in rule.patterns)
         )
         if matched:
             key = (rule.category, rule.subcategory)

@@ -161,6 +161,37 @@ def test_concerns_fears_two_examples():
     assert len(out.fields.concerns.fears) >= 2
 
 
+def test_concerns_fears_catches_inflected_stems():
+    """Regression: previously 'korkarım' (-arım form) wasn't in the keyword
+    list, so live Cornell entries like 'ben aslandan korkarım' fell into
+    general/uncategorized and /concern came back empty even though /detail
+    surfaced them via Gemini's reading of general."""
+    raw = _collection(
+        [
+            _entry(eid=1, notes="ben aslandan korkarım"),
+            _entry(eid=2, notes="Karanlıktan korkarsın bazen."),
+            _entry(eid=3, notes="Ürkütücü bir his var."),
+        ]
+    )
+    out = ParserService().parse(raw)
+    fears_texts = " | ".join(it.text.lower() for it in out.fields.concerns.fears)
+    assert "aslandan korkarım" in fears_texts
+    assert "korkarsın" in fears_texts
+    assert "ürkütücü" in fears_texts
+
+
+def test_concerns_anxieties_catches_inflected_stems():
+    raw = _collection(
+        [
+            _entry(eid=1, notes="Endişem büyüyor."),
+            _entry(eid=2, notes="Kaygılarım var bugün."),
+            _entry(eid=3, notes="Stresliyiz şu sıralar."),
+        ]
+    )
+    out = ParserService().parse(raw)
+    assert len(out.fields.concerns.anxieties) >= 3
+
+
 def test_concerns_failures_two_examples():
     raw = _collection(
         [
