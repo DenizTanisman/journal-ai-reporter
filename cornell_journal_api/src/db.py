@@ -1,18 +1,22 @@
-"""SQLite read-only adapter.
+"""Postgres read-only adapter (Diary FAZ 1.3 sidecar).
 
-Opens the Cornell Diary database with `mode=ro&immutable=1` so we cannot
-accidentally write through. Cornell Diary's schema is fixed
-(`diary_entries`), and queries use parameter placeholders — no string
-interpolation of user input ever reaches SQL.
+Diary moved from SQLite to Postgres in FAZ 1.3. The sidecar now connects
+to the same Postgres instance and reads through asyncpg. Read-only is
+enforced **operationally** (deploy with a Postgres role that only has
+SELECT on `diary_entries`) — Postgres has no per-connection mode=ro flag
+the way SQLite did.
+
+The projection (`row_to_entry_dict`) is byte-for-byte the same shape the
+SQLite adapter produced, so the Reporter Converter is unchanged.
 """
 
 from __future__ import annotations
 
 import hashlib
-import sqlite3
 from datetime import date as date_type, datetime, timedelta, timezone
-from pathlib import Path
 from typing import Iterable
+
+import asyncpg
 
 
 SELECT_BASE = """
@@ -34,49 +38,50 @@ SELECT_BASE = """
 """
 
 
-def open_readonly(db_path: str) -> sqlite3.Connection:
-    """Open the Cornell SQLite file read-only.
+async def create_pool(database_url: str) -> asyncpg.Pool:
+    """Build a small asyncpg pool (cap 5) pointed at the Diary DB.
 
-    `mode=ro` enforces read-only at the URI level (writes raise
-    OperationalError, verified in tests) but still tracks file changes —
-    crucial because Cornell Diary writes to this same file from the Tauri
-    app while we read. We previously used `immutable=1` which is a
-    performance hint that promises the file won't change; SQLite then
-    skips change detection entirely and the sidecar serves a stale view
-    until restart. Tauri's WAL mode handles concurrent reads safely, so
-    `mode=ro` alone is the right level.
+    The pool is reused across every `/api/entries` request via FastAPI's
+    `app.state` — opening a fresh connection per call would hammer the
+    DB on rate-limit-burst windows.
     """
-    p = Path(db_path)
-    if not p.exists():
-        raise FileNotFoundError(f"Cornell DB not found at {db_path}")
-    uri = f"file:{p.as_posix()}?mode=ro"
-    conn = sqlite3.connect(uri, uri=True, detect_types=sqlite3.PARSE_DECLTYPES)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return await asyncpg.create_pool(
+        dsn=database_url,
+        min_size=1,
+        max_size=5,
+        command_timeout=10,
+        server_settings={"application_name": "cornell_journal_api"},
+    )
 
 
-def fetch_rows(
-    conn: sqlite3.Connection,
+async def fetch_rows(
+    pool: asyncpg.Pool,
     *,
     start: date_type | None,
     end: date_type | None,
     fetch_all: bool,
-) -> list[sqlite3.Row]:
+) -> list[asyncpg.Record]:
     if fetch_all:
-        cur = conn.execute(SELECT_BASE + " ORDER BY date DESC")
-    else:
-        if start is None or end is None:
-            end = end or date_type.today()
-            start = start or (end - timedelta(days=30))
-        cur = conn.execute(
-            SELECT_BASE + " WHERE date BETWEEN ? AND ? ORDER BY date DESC",
-            (start.isoformat(), end.isoformat()),
+        async with pool.acquire() as conn:
+            return await conn.fetch(SELECT_BASE + " ORDER BY date DESC")
+    if start is None or end is None:
+        end = end or date_type.today()
+        start = start or (end - timedelta(days=30))
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            SELECT_BASE + " WHERE date BETWEEN $1 AND $2 ORDER BY date DESC",
+            start.isoformat(),
+            end.isoformat(),
         )
-    return cur.fetchall()
 
 
-def row_to_entry_dict(row: sqlite3.Row) -> dict:
-    """Project a Cornell row onto the RawEntry shape used by the Reporter."""
+def row_to_entry_dict(row: asyncpg.Record) -> dict:
+    """Project a Diary Postgres row onto the RawEntry shape.
+
+    asyncpg.Record exposes both indexing by column name and `.get(name)`,
+    so the body matches the SQLite adapter we replaced — the Converter
+    on the Reporter side sees the exact same JSON.
+    """
 
     cue_pairs: list[str] = []
     for i in range(1, 8):
@@ -104,10 +109,14 @@ def _stable_id(date_str: str) -> int:
 
 
 def _normalize_ts(value: str | None) -> str:
-    """Convert SQLite timestamp text into RFC3339 UTC, defaulting to now()."""
+    """Convert Diary's stored timestamp text into RFC3339 UTC.
+
+    Diary stores ISO strings (Postgres column type is TEXT to match the
+    SQLite-era schema, kept for migration parity). Falls back to now()
+    for malformed values so a single bad row doesn't break the response.
+    """
     if not value:
         return datetime.now(tz=timezone.utc).isoformat()
-    # Cornell stores `datetime('now')`-style values, e.g. '2026-04-29 10:30:00'
     s = value.strip()
     try:
         if "T" in s:
