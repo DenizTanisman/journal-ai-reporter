@@ -16,7 +16,12 @@ class SidecarSettings(BaseSettings):
         extra="ignore",
     )
 
-    cornell_db_path: str = Field(default="cornell-diary.db")
+    # Diary FAZ 1.3 moved storage from SQLite to Postgres; the sidecar
+    # now connects through asyncpg. Read-only is enforced via the
+    # Postgres role permissions (deploy with a SELECT-only user).
+    cornell_database_url: str = Field(
+        default="postgres://diary_user:change_me_in_dev@127.0.0.1:5435/diary_db",
+    )
     cornell_api_key: str = Field(default="")
     rate_limit_per_minute: int = 60
     allowed_origins: str = "http://localhost:8002"
