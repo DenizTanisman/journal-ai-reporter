@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     http_timeout_seconds: float = 30.0
     gemini_timeout_seconds: float = 60.0
 
+    # Hybrid classifier (parser.md). Default off — process keeps using
+    # the legacy keyword-only path until an operator opts in.
+    hybrid_classifier_enabled: bool = False
+    classification_cache_size: int = Field(default=1000, ge=1)
+
     @field_validator("cornell_api_url")
     @classmethod
     def _strip_trailing_slash(cls, v: str) -> str:
