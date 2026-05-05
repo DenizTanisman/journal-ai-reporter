@@ -85,15 +85,54 @@ per request — flipping it requires no code change, only a re-deploy.
 
 ## Performance budget
 
-| Path | Per-sentence latency |
-|------|-----------------------|
+Per-sentence latency:
+
+| Path | Latency |
+|------|---------|
 | Cache hit | ~1 ms |
 | HIGH keyword | ~10 ms (regex only) |
 | MEDIUM / NO match (cache miss) | 500–2000 ms (Gemini 2.5 Flash) |
 
-Targets pinned by `HybridClassifier.get_stats()`:
-- LLM call rate < 30 % (rest served by cache + HIGH)
-- Cache hit rate > 50 % (Cornell journals repeat phrases)
+Per-`/report` latency (measured against a 7-entry / 30-day journal):
+
+| Mode | Total | Parser | Reporter (markdown gen) |
+|------|-------|--------|-------------------------|
+| Legacy (default) | **~14 s** | <1 ms (regex only) | ~14 s (single Gemini call) |
+| Hybrid (opt-in) | **~50–60 s** | ~40 s (parallelised LLM calls) | ~14 s (same) |
+
+The Reporter's own Gemini call to render the markdown is the
+dominant cost in legacy and roughly a third of the cost in hybrid.
+The hybrid Parser pays an extra ~40 s on the first request because:
+
+- novel Turkish entries push most sentences into MEDIUM / NO_MATCH,
+  driving LLM call rate well above the 30 % we initially budgeted;
+- Gemini's free-tier 15 RPM cap serialises bursts of parallel calls;
+- per-call latency variance is wide (p95 is multiples of p50).
+
+Trackable via `HybridClassifier.get_stats()`:
+- LLM call rate (target <30 % once HIGH catalogue is broadened)
+- Cache hit rate (target >50 % across multi-day reports)
+- Keyword hit rate (the only path that's cheap)
+
+## Status: experimental
+
+The hybrid path landed as **infrastructure** — every brick is
+covered by tests and the feature flag keeps it out of the default
+hot path. It is **not production-ready for latency-sensitive
+callers** (Jarvis chat / `/detail`-style endpoints) yet. Three
+follow-ups are queued:
+
+1. **Per-sentence LLM timeout** (~1.5 s). Anything slower falls back
+   to the keyword verdict so a tail-latency LLM call can't poison
+   the whole report.
+2. **HIGH catalogue widening**. Promote MEDIUM patterns that the
+   LLM consistently agrees with (`X oldum`, `başarı`, `yendim` for
+   common objects) so fewer sentences need the LLM at all.
+3. **Batched LLM call**. One Gemini round-trip with all sentences
+   instead of N parallel ones — collapses the 15 RPM rate-limit
+   tax. Schema + prompt refactor; left for a separate sprint.
+
+Until those land, keep `HYBRID_CLASSIFIER_ENABLED=false` (default).
 
 ## Schema extensions
 

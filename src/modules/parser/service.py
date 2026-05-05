@@ -16,6 +16,7 @@ orchestrator.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date
 from typing import Iterable
 
@@ -105,29 +106,22 @@ class ParserService:
         fields: FieldsTree,
         day_tree: FieldsTree,
     ) -> None:
-        sentences_seen: set[str] = set()
-
+        # Collect distinct sentences first (preserve order across the four
+        # Cornell columns) and only THEN dispatch classification. In hybrid
+        # mode each LLM call is independent, so we can run them concurrently
+        # via asyncio.gather — turning a 100s sequential walk into a few
+        # parallel seconds. Legacy path is sync inside the gather, which is
+        # cheap.
+        sentences: list[str] = []
+        seen: set[str] = set()
         for source in (entry.planlar, entry.cue_column, entry.notes_column, entry.summary):
             for sentence in split_sentences(source):
                 norm = sentence.strip()
-                if not norm or norm in sentences_seen:
-                    continue
-                sentences_seen.add(norm)
+                if norm and norm not in seen:
+                    seen.add(norm)
+                    sentences.append(norm)
 
-                hits = await self._classify(norm)
-                if not hits:
-                    hits = [fallback_subcategory(norm)]
-
-                for category, sub in hits:
-                    if (category, sub) not in _VALID_SUBCATEGORIES:
-                        # Hybrid LLM produced a category outside the
-                        # legacy literal — coerce instead of crashing.
-                        category, sub = "general", "uncategorized"
-                    item = ParsedItem(date=entry.date, text=norm, source_entry_id=entry.id)
-                    _append(fields, category, sub, item)
-                    _append(day_tree, category, sub, item)
-
-        if not sentences_seen:
+        if not sentences:
             placeholder = ParsedItem(
                 date=entry.date,
                 text="(empty entry)",
@@ -135,6 +129,23 @@ class ParserService:
             )
             _append(fields, "general", "uncategorized", placeholder)
             _append(day_tree, "general", "uncategorized", placeholder)
+            return
+
+        results = await asyncio.gather(*(self._classify(s) for s in sentences))
+
+        for sentence, hits in zip(sentences, results, strict=True):
+            if not hits:
+                hits = [fallback_subcategory(sentence)]
+            for category, sub in hits:
+                if (category, sub) not in _VALID_SUBCATEGORIES:
+                    # Hybrid LLM produced a category outside the legacy
+                    # literal — coerce instead of crashing.
+                    category, sub = "general", "uncategorized"
+                item = ParsedItem(
+                    date=entry.date, text=sentence, source_entry_id=entry.id
+                )
+                _append(fields, category, sub, item)
+                _append(day_tree, category, sub, item)
 
     async def _classify(
         self, sentence: str
