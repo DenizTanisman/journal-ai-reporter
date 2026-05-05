@@ -129,6 +129,17 @@ RULES: tuple[CategoryRule, ...] = (
             re.compile(r"\bkazand\w*\b", re.IGNORECASE),
             re.compile(r"\bçözd\w*\b", re.IGNORECASE),
             re.compile(r"\btamamlad\w*\b", re.IGNORECASE),
+            # `başarı` (noun) without the negation suffix `-sız`. The
+            # negative lookahead keeps "başarısız(lık)" from matching.
+            re.compile(r"\bbaşarı(?!s[ıi]z)\w*\b", re.IGNORECASE),
+            # `oldum`/`oldu` style framings: "F1 pilotu oldum" / "doktor
+            # oldum" / "anne oldum" — milestone-flavoured statements that
+            # the verb-only rules above miss.
+            re.compile(r"\b\w+\s+oldu[mn]?\b", re.IGNORECASE),
+            # `yendim` / `yendi` — defeat/overcome verb. "kanseri yendim",
+            # "rakibi yendi". Past-tense form keeps it tight enough to
+            # avoid the passive "yemek yenildi" false-positive.
+            re.compile(r"\byendi[mn]?\b", re.IGNORECASE),
         ),
     ),
     # --- successes.positive_moments
