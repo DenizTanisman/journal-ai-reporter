@@ -322,7 +322,7 @@ def test_report_local_rate_limit_kicks_in(auth_headers, monkeypatch):
 # ---------------------------------------------------------------------------
 # /report/file — debug upload path
 # ---------------------------------------------------------------------------
-def test_report_file_runs_only_reporter(client, auth_headers):
+async def test_report_file_runs_only_reporter(client, auth_headers):
     from src.modules.converter.schemas import RawEntry, RawEntryCollection
     from src.modules.parser.service import ParserService
 
@@ -340,7 +340,7 @@ def test_report_file_runs_only_reporter(client, auth_headers):
         range_start=date(2026, 4, 12),
         range_end=date(2026, 4, 12),
     )
-    parsed = ParserService().parse(raw)
+    parsed = await ParserService().parse(raw)
     payload = parsed.model_dump_json().encode("utf-8")
 
     app, c = client

@@ -1,12 +1,23 @@
 """ParserService — turns raw journal entries into a categorized tree.
 
-Deterministic. No network, no AI. Input is the Converter's output schema;
-output is `ParsedCollection` ready for the Reporter to slice by tag.
+Two paths inside one async API:
+
+- **Legacy** (default): the existing deterministic regex catalogue
+  (`categorizer.classify_sentence`). Sync work wrapped in async to
+  match the new signature, byte-for-byte the same output.
+- **Hybrid** (opt-in via `Settings.hybrid_classifier_enabled`): a
+  `HybridClassifier` consults keyword patterns + cache + LLM per
+  sentence. See parser.md for the decision tree.
+
+The path is decided at construction time (`hybrid` arg). If `hybrid`
+is None, we run legacy; otherwise we delegate every sentence to the
+orchestrator.
 """
 
 from __future__ import annotations
 
 from datetime import date
+from typing import Iterable
 
 from src.exceptions import ParserError
 from src.logger import get_logger
@@ -16,6 +27,7 @@ from src.modules.parser.categorizer import (
     fallback_subcategory,
     split_sentences,
 )
+from src.modules.parser.hybrid_classifier import HybridClassifier
 from src.modules.parser.schemas import (
     CategoryName,
     DateRange,
@@ -28,11 +40,34 @@ from src.modules.parser.schemas import (
 
 log = get_logger(__name__)
 
+# Subcategories the legacy schema accepts. The hybrid LLM may return
+# names outside this set (`regrets`, `sadness`, …) — we coerce those
+# into `general.uncategorized` rather than crash, since the schema is
+# a Literal that pydantic would reject.
+_VALID_SUBCATEGORIES = {
+    ("todos", "open"),
+    ("todos", "completed"),
+    ("todos", "deferred"),
+    ("concerns", "anxieties"),
+    ("concerns", "fears"),
+    ("concerns", "failures"),
+    ("successes", "achievements"),
+    ("successes", "milestones"),
+    ("successes", "positive_moments"),
+    ("general", "reflections"),
+    ("general", "observations"),
+    ("general", "uncategorized"),
+}
+
 
 class ParserService:
     """Categorizes raw entries into the Parsed schema."""
 
-    def parse(self, raw: RawEntryCollection) -> ParsedCollection:
+    def __init__(self, hybrid: HybridClassifier | None = None) -> None:
+        # `hybrid is None` ⇒ legacy keyword-only path.
+        self._hybrid = hybrid
+
+    async def parse(self, raw: RawEntryCollection) -> ParsedCollection:
         if not isinstance(raw, RawEntryCollection):
             raise ParserError("ParserService.parse expected RawEntryCollection")
 
@@ -42,7 +77,7 @@ class ParserService:
         for entry in raw.entries:
             day_key = entry.date.isoformat()
             day_tree = by_date.setdefault(day_key, FieldsTree())
-            self._categorize_entry(entry, fields, day_tree)
+            await self._categorize_entry(entry, fields, day_tree)
 
         metadata = ParsedMetadata(
             entry_count=len(raw.entries),
@@ -54,13 +89,17 @@ class ParserService:
 
         log.info(
             "parser_parsed",
-            extra={"endpoint": "parser.parse", "status": "ok"},
+            extra={
+                "endpoint": "parser.parse",
+                "status": "ok",
+                "mode": "hybrid" if self._hybrid else "legacy",
+            },
         )
         return ParsedCollection(metadata=metadata, fields=fields, by_date=by_date)
 
     # ------------------------------------------------------------------
     # internal helpers
-    def _categorize_entry(
+    async def _categorize_entry(
         self,
         entry: RawEntry,
         fields: FieldsTree,
@@ -68,9 +107,6 @@ class ParserService:
     ) -> None:
         sentences_seen: set[str] = set()
 
-        # The four Cornell columns are concatenated into one stream so we can
-        # categorize them uniformly. We process planlar separately *first*
-        # because checkbox markers are most reliable there.
         for source in (entry.planlar, entry.cue_column, entry.notes_column, entry.summary):
             for sentence in split_sentences(source):
                 norm = sentence.strip()
@@ -78,16 +114,19 @@ class ParserService:
                     continue
                 sentences_seen.add(norm)
 
-                hits = classify_sentence(norm)
+                hits = await self._classify(norm)
                 if not hits:
                     hits = [fallback_subcategory(norm)]
 
                 for category, sub in hits:
+                    if (category, sub) not in _VALID_SUBCATEGORIES:
+                        # Hybrid LLM produced a category outside the
+                        # legacy literal — coerce instead of crashing.
+                        category, sub = "general", "uncategorized"
                     item = ParsedItem(date=entry.date, text=norm, source_entry_id=entry.id)
                     _append(fields, category, sub, item)
                     _append(day_tree, category, sub, item)
 
-        # Guarantee the entry isn't lost even if every column was empty.
         if not sentences_seen:
             placeholder = ParsedItem(
                 date=entry.date,
@@ -96,6 +135,14 @@ class ParserService:
             )
             _append(fields, "general", "uncategorized", placeholder)
             _append(day_tree, "general", "uncategorized", placeholder)
+
+    async def _classify(
+        self, sentence: str
+    ) -> list[tuple[CategoryName, SubCategoryName]]:
+        if self._hybrid is not None:
+            return await self._hybrid.classify(sentence)
+        # Legacy: existing sync catalogue.
+        return classify_sentence(sentence)
 
 
 def _append(
@@ -109,9 +156,9 @@ def _append(
     bucket_list.append(item)
 
 
-def _min_entry_date(entries: list[RawEntry]) -> date | None:
+def _min_entry_date(entries: Iterable[RawEntry]) -> date | None:
     return min((e.date for e in entries), default=None)
 
 
-def _max_entry_date(entries: list[RawEntry]) -> date | None:
+def _max_entry_date(entries: Iterable[RawEntry]) -> date | None:
     return max((e.date for e in entries), default=None)

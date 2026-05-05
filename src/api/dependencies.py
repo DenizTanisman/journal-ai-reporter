@@ -10,7 +10,11 @@ from fastapi import Depends, Header, HTTPException, status
 
 from src.config import Settings, get_settings
 from src.modules.converter.service import ConverterService
+from src.modules.parser.cache import ClassificationCache
+from src.modules.parser.hybrid_classifier import HybridClassifier
+from src.modules.parser.llm_classifier import LLMClassifier
 from src.modules.parser.service import ParserService
+from src.modules.reporter.ai_client import GeminiClient
 from src.modules.reporter.service import ReporterService
 
 
@@ -50,8 +54,19 @@ def get_converter_service(settings: Settings = Depends(get_settings)) -> Convert
     return ConverterService(settings=settings)
 
 
-def get_parser_service() -> ParserService:
-    return ParserService()
+def get_parser_service(settings: Settings = Depends(get_settings)) -> ParserService:
+    """Build a ParserService. When `hybrid_classifier_enabled=False`
+    (default), the legacy keyword-only path is used. When the flag is
+    flipped on we instantiate the orchestrator + reuse the existing
+    Gemini client so we don't open a second SDK connection."""
+    if not settings.hybrid_classifier_enabled:
+        return ParserService()
+
+    gemini = GeminiClient(settings=settings)
+    llm = LLMClassifier(gemini_client=gemini)
+    cache = ClassificationCache(max_size=settings.classification_cache_size)
+    hybrid = HybridClassifier(llm_classifier=llm, cache=cache, llm_enabled=True)
+    return ParserService(hybrid=hybrid)
 
 
 def get_reporter_service(settings: Settings = Depends(get_settings)) -> ReporterService:

@@ -59,7 +59,7 @@ def _entry(eid: int, d: date, **kw) -> RawEntry:
     )
 
 
-def _parsed_with_data():
+async def _parsed_with_data():
     raw = RawEntryCollection(
         entries=[
             _entry(1, date(2026, 4, 10), planlar="[ ] Endpoint yaz"),
@@ -70,11 +70,11 @@ def _parsed_with_data():
         range_start=date(2026, 4, 10),
         range_end=date(2026, 4, 12),
     )
-    return ParserService().parse(raw)
+    return await ParserService().parse(raw)
 
 
-def _parsed_empty():
-    return ParserService().parse(RawEntryCollection(entries=[], count=0))
+async def _parsed_empty():
+    return await ParserService().parse(RawEntryCollection(entries=[], count=0))
 
 
 class FakeBackend:
@@ -164,57 +164,57 @@ def test_build_user_prompt_neutralizes_injection_attempt():
 # ---------------------------------------------------------------------------
 # Tag handlers — slicing
 # ---------------------------------------------------------------------------
-def test_prepare_detail_uses_full_tree():
-    parsed = _parsed_with_data()
+async def test_prepare_detail_uses_full_tree():
+    parsed = await _parsed_with_data()
     out = prepare(parsed, "/detail")
     assert out.template_key == "/detail"
     assert out.entry_count == parsed.metadata.entry_count
     assert "todos" in json.loads(out.payload_json)
 
 
-def test_prepare_todo_slices_only_todos():
-    parsed = _parsed_with_data()
+async def test_prepare_todo_slices_only_todos():
+    parsed = await _parsed_with_data()
     out = prepare(parsed, "/todo")
     payload = json.loads(out.payload_json)
     assert set(payload.keys()) == {"open", "completed", "deferred"}
 
 
-def test_prepare_concern_slices_only_concerns():
-    parsed = _parsed_with_data()
+async def test_prepare_concern_slices_only_concerns():
+    parsed = await _parsed_with_data()
     out = prepare(parsed, "/concern")
     payload = json.loads(out.payload_json)
     assert set(payload.keys()) == {"anxieties", "fears", "failures"}
 
 
-def test_prepare_success_slices_only_successes():
-    parsed = _parsed_with_data()
+async def test_prepare_success_slices_only_successes():
+    parsed = await _parsed_with_data()
     out = prepare(parsed, "/success")
     payload = json.loads(out.payload_json)
     assert set(payload.keys()) == {"achievements", "milestones", "positive_moments"}
 
 
-def test_prepare_date_tag_in_range():
-    parsed = _parsed_with_data()
+async def test_prepare_date_tag_in_range():
+    parsed = await _parsed_with_data()
     out = prepare(parsed, "/date{12.04.2026}")
     assert out.template_key == "/date"
     assert out.date_range.start == date(2026, 4, 12)
     assert out.date_range.end == date(2026, 4, 12)
 
 
-def test_prepare_date_tag_out_of_range_raises():
-    parsed = _parsed_with_data()
+async def test_prepare_date_tag_out_of_range_raises():
+    parsed = await _parsed_with_data()
     with pytest.raises(DateNotInRangeError):
         prepare(parsed, "/date{01.01.2020}")
 
 
-def test_prepare_invalid_tag_raises():
-    parsed = _parsed_with_data()
+async def test_prepare_invalid_tag_raises():
+    parsed = await _parsed_with_data()
     with pytest.raises(InvalidTagError):
         prepare(parsed, "/nope")
 
 
-def test_prepare_empty_parsed_raises():
-    parsed = _parsed_empty()
+async def test_prepare_empty_parsed_raises():
+    parsed = await _parsed_empty()
     with pytest.raises(NoEntriesError):
         prepare(parsed, "/detail")
 
@@ -280,7 +280,7 @@ DETAIL_PAYLOAD = json.dumps(
 
 
 async def test_reporter_generate_detail_returns_report():
-    parsed = _parsed_with_data()
+    parsed = await _parsed_with_data()
     fake = FakeBackend(responses=[DETAIL_PAYLOAD])
     service = ReporterService(ai_client=GeminiClient(backend=fake))
 
@@ -293,7 +293,7 @@ async def test_reporter_generate_detail_returns_report():
 
 
 async def test_reporter_generate_todo_renders_markdown():
-    parsed = _parsed_with_data()
+    parsed = await _parsed_with_data()
     fake = FakeBackend(
         responses=[
             json.dumps(
@@ -314,7 +314,7 @@ async def test_reporter_generate_todo_renders_markdown():
 
 
 async def test_reporter_generate_date_tag():
-    parsed = _parsed_with_data()
+    parsed = await _parsed_with_data()
     fake = FakeBackend(
         responses=[
             json.dumps(
@@ -335,7 +335,7 @@ async def test_reporter_generate_date_tag():
 
 
 async def test_reporter_passes_system_prompt_and_wrapped_payload():
-    parsed = _parsed_with_data()
+    parsed = await _parsed_with_data()
     fake = FakeBackend(responses=[DETAIL_PAYLOAD])
     service = ReporterService(ai_client=GeminiClient(backend=fake))
     await service.generate(parsed, "/detail")
@@ -346,7 +346,7 @@ async def test_reporter_passes_system_prompt_and_wrapped_payload():
 
 
 async def test_reporter_propagates_rate_limit():
-    parsed = _parsed_with_data()
+    parsed = await _parsed_with_data()
     fake = FakeBackend(raise_exc=RuntimeError("429 too many"))
     service = ReporterService(ai_client=GeminiClient(backend=fake))
     with pytest.raises(GeminiRateLimitError):
@@ -354,7 +354,7 @@ async def test_reporter_propagates_rate_limit():
 
 
 async def test_reporter_invalid_ai_object_raises():
-    parsed = _parsed_with_data()
+    parsed = await _parsed_with_data()
     # Gemini returns a JSON array instead of an object
     fake = FakeBackend(responses=["[1, 2, 3]"])
     service = ReporterService(ai_client=GeminiClient(backend=fake))
@@ -384,7 +384,7 @@ async def test_injection_attempt_does_not_break_wrapper():
         range_start=date(2026, 4, 1),
         range_end=date(2026, 4, 1),
     )
-    parsed = ParserService().parse(raw)
+    parsed = await ParserService().parse(raw)
 
     fake = FakeBackend(responses=[DETAIL_PAYLOAD])
     service = ReporterService(ai_client=GeminiClient(backend=fake))

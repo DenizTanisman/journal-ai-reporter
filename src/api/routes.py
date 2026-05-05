@@ -71,7 +71,7 @@ async def generate_report(
     reporter: Annotated[ReporterService, Depends(get_reporter_service)],
 ) -> ReportResponse:
     raw = await _fetch_raw(converter, body)
-    parsed = parser.parse(raw)
+    parsed = await parser.parse(raw)
 
     if parsed.metadata.entry_count == 0:
         raise NoEntriesError("no journal entries available for the requested range")
